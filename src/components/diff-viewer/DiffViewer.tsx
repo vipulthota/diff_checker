@@ -20,6 +20,15 @@ export interface MergeControls {
   onChoose: (hunk: number, side: MergeChoice) => void
 }
 
+/** The row (or whole difference) under the pointer; it is highlighted on both sides. */
+export interface Hover {
+  item: number
+  hunk: number | null
+}
+
+const isHover = (h: Hover | null | undefined, hunk: number | null, i: number) =>
+  !!h && (hunk !== null ? h.hunk === hunk : h.hunk === null && h.item === i)
+
 export interface DiffViewerProps {
   items: Item[]
   hunkItem: number[]
@@ -35,6 +44,8 @@ export interface DiffViewerProps {
   onExpandFold: (id: string) => void
   merge?: MergeControls
   leftLabel: string
+  hover?: Hover | null
+  onHover?: (h: Hover | null) => void
   onCopy?: (side: 'left' | 'right') => void
   rightLabel: string
 }
@@ -71,6 +82,7 @@ interface CellProps {
   matches?: LineMatch[]
   currentMatch: number
   current: boolean
+  hovered?: boolean
   wrap: boolean
   item: number
   extra?: React.ReactNode
@@ -93,7 +105,7 @@ const Cell = memo(function Cell(p: CellProps) {
   const k = p.kind
   return (
     <div
-      className={`drow ${k} ${p.wrap ? 'wrap' : ''} ${p.current ? 'current' : ''}`}
+      className={`drow ${k} ${p.wrap ? 'wrap' : ''} ${p.current ? 'current' : ''} ${p.hovered ? 'hover' : ''}`}
       data-item={p.item}
     >
       <span className="gutter">{p.no}</span>
@@ -300,6 +312,7 @@ function SplitVirtual(p: DiffViewerProps) {
             matches={ms}
             currentMatch={p.currentMatch}
             current={r.hunk !== null && r.hunk === p.currentHunk}
+            hovered={isHover(p.hover, r.hunk, i)}
             wrap={false}
             item={i}
             extra={showMerge ? <MergeButtons hunk={r.hunk!} merge={p.merge!} /> : undefined}
@@ -307,7 +320,11 @@ function SplitVirtual(p: DiffViewerProps) {
         )
       }
       rows.push(
-        <div key={i} style={{ position: 'absolute', top, left: 0, right: 0, height: rowH }}>
+        <div
+          key={i}
+          style={{ position: 'absolute', top, left: 0, right: 0, height: rowH }}
+          onMouseEnter={() => p.onHover?.(hoverKey(it, i))}
+        >
           {content}
         </div>,
       )
@@ -345,6 +362,7 @@ function SplitVirtual(p: DiffViewerProps) {
         }
         className={`diff-font min-h-0 flex-1 overflow-auto ${side === 'left' ? 'border-r border-line' : ''}`}
         onScroll={(e) => sync(e.currentTarget, other.current)}
+        onMouseLeave={() => p.onHover?.(null)}
       >
         <div
           style={{
@@ -412,6 +430,7 @@ function SplitWrapped(p: DiffViewerProps) {
         tabIndex={0}
         role="region"
         aria-label="Differences, side by side"
+        onMouseLeave={() => p.onHover?.(null)}
         className="diff-font min-h-0 flex-1 overflow-auto"
       >
         {p.items.map((it, i) => {
@@ -425,6 +444,7 @@ function SplitWrapped(p: DiffViewerProps) {
             <div
               key={i}
               data-slot={i}
+              onMouseEnter={() => p.onHover?.(hoverKey(it, i))}
               className="grid grid-cols-2 [&>div:first-child]:border-r [&>div:first-child]:border-line"
             >
               <Cell
@@ -437,6 +457,7 @@ function SplitWrapped(p: DiffViewerProps) {
                 matches={ms?.filter((x) => x.side === 'left').map((x) => x.m)}
                 currentMatch={p.currentMatch}
                 current={current}
+                hovered={isHover(p.hover, r.hunk, i)}
                 wrap
                 item={i}
                 extra={showMerge ? <MergeButtons hunk={r.hunk!} merge={p.merge!} /> : undefined}
@@ -451,6 +472,7 @@ function SplitWrapped(p: DiffViewerProps) {
                 matches={ms?.filter((x) => x.side === 'right').map((x) => x.m)}
                 currentMatch={p.currentMatch}
                 current={current}
+                hovered={isHover(p.hover, r.hunk, i)}
                 wrap
                 item={i}
               />
@@ -504,7 +526,7 @@ function Unified(p: DiffViewerProps) {
     const showMerge = !!p.merge && u.hunk !== null && p.hunkItem[u.hunk] === i
     return (
       <div
-        className={`drow ${u.kind} ${p.wrap ? 'wrap' : ''} ${u.hunk !== null && u.hunk === p.currentHunk ? 'current' : ''}`}
+        className={`drow ${u.kind} ${p.wrap ? 'wrap' : ''} ${u.hunk !== null && u.hunk === p.currentHunk ? 'current' : ''} ${isHover(p.hover, u.hunk, i) ? 'hover' : ''}`}
         data-item={i}
       >
         <span className="gutter">{u.leftNo}</span>
@@ -554,6 +576,7 @@ function Unified(p: DiffViewerProps) {
         tabIndex={0}
         role="region"
         aria-label="Differences, unified"
+        onMouseLeave={() => p.onHover?.(null)}
         className="diff-font min-h-0 flex-1 overflow-auto"
         onScroll={(e) => !p.wrap && setScrollTop(e.currentTarget.scrollTop)}
       >
@@ -576,6 +599,7 @@ function Unified(p: DiffViewerProps) {
               <div
                 key={i}
                 style={{ position: 'absolute', top: i * rowH, left: 0, right: 0, height: rowH }}
+                onMouseEnter={() => p.onHover?.(hoverKey(p.items[i], i))}
               >
                 {renderItem(i)}
               </div>
@@ -587,7 +611,13 @@ function Unified(p: DiffViewerProps) {
   )
 }
 
+function hoverKey(it: Item, i: number): Hover {
+  return { item: i, hunk: it.type === 'row' ? it.row.hunk : it.type === 'urow' ? it.u.hunk : null }
+}
+
 export function DiffViewer(props: DiffViewerProps) {
-  if (props.view === 'unified') return <Unified {...props} />
-  return props.wrap ? <SplitWrapped {...props} /> : <SplitVirtual {...props} />
+  const [hover, setHover] = useState<Hover | null>(null)
+  const p = { ...props, hover, onHover: setHover }
+  if (p.view === 'unified') return <Unified {...p} />
+  return p.wrap ? <SplitWrapped {...p} /> : <SplitVirtual {...p} />
 }
