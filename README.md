@@ -215,3 +215,5 @@ The app has no hard-coded domain or localhost URL, so any domain works (for exam
   content may feel slow because that is a browser limitation; soft-wrapping is turned off automatically for them.
 - Pasting from the clipboard button needs the browser's clipboard permission; `Ctrl/Cmd + V` always works.
 - Search is a literal text search (no regular expressions).
+#   d i f f _ c h e c k e r  
+ 
