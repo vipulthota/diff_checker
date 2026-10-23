@@ -79,10 +79,14 @@ interface CellProps {
 const Cell = memo(function Cell(p: CellProps) {
   if (p.kind === 'filler' || p.text === null) {
     return (
-      <div className={`drow filler ${p.wrap ? 'wrap' : ''}`} aria-hidden>
+      <div
+        className={`drow filler ${p.wrap ? 'wrap' : ''}`}
+        aria-hidden={p.extra ? undefined : true}
+      >
         <span className="gutter" />
         <span className="marker" />
         <span className="code" />
+        {p.extra}
       </div>
     )
   }
