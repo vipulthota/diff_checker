@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   ArrowLeftRight,
   ArrowUpToLine,
+  ArrowUp,
+  ArrowDown,
+  Maximize2,
+  Minimize2,
   ArrowDownToLine,
   ChevronDown,
   ChevronUp,
@@ -154,6 +158,8 @@ export function TextWorkspace(props: TextWorkspaceProps) {
   const [past, setPast] = useState<MergeChoices[]>([])
   const [future, setFuture] = useState<MergeChoices[]>([])
   const [override, setOverride] = useState<string | null>(null)
+  const [mergeTop, setMergeTop] = useState(false)
+  const [mergeTall, setMergeTall] = useState(false)
 
   useEffect(() => {
     if (mode !== 'code') setWrap(prefs.wrap)
@@ -388,6 +394,11 @@ export function TextWorkspace(props: TextWorkspaceProps) {
     () => override ?? buildMerged(result, choices),
     [override, result, choices],
   )
+  const mergedGutter = useRef<HTMLPreElement>(null)
+  const mergedNumbers = useMemo(() => {
+    const n = Math.max(merged.split('\n').length, 1)
+    return Array.from({ length: n }, (_, i) => i + 1).join('\n')
+  }, [merged])
   const resolved = Object.values(choices).filter(Boolean).length
 
   /* -------------------------------- shortcuts ----------------------------- */
@@ -965,7 +976,10 @@ export function TextWorkspace(props: TextWorkspaceProps) {
             </Notice>
           )}
 
-          <div className="relative flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel md:min-h-0">
+          <div
+            style={{ order: mergeTop ? 2 : 1 }}
+            className="relative flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel md:min-h-0"
+          >
             {loading && (
               <div className="absolute right-3 top-9 z-20 flex items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1 text-xs shadow">
                 <Loader2 size={14} className="animate-spin text-accent" aria-hidden /> Updating…
@@ -1006,7 +1020,8 @@ export function TextWorkspace(props: TextWorkspaceProps) {
           {mergeOpen && (
             <section
               aria-label="Merged result"
-              className="flex h-60 shrink-0 flex-col rounded-xl border border-line bg-panel"
+              style={{ order: mergeTop ? 1 : 2 }}
+              className={`flex shrink-0 flex-col rounded-xl border border-line bg-panel ${mergeTall ? 'h-[28rem] max-h-[60vh]' : 'h-60'}`}
             >
               <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
                 <h2 className="mr-auto text-sm font-semibold">
@@ -1015,6 +1030,22 @@ export function TextWorkspace(props: TextWorkspaceProps) {
                     · {resolved} of {hunks} differences resolved (unresolved keep the original)
                   </span>
                 </h2>
+                <IconButton
+                  label={
+                    mergeTop
+                      ? 'Move merged result below the diff'
+                      : 'Move merged result above the diff'
+                  }
+                  onClick={() => setMergeTop((t) => !t)}
+                >
+                  {mergeTop ? <ArrowDown size={16} /> : <ArrowUp size={16} />}
+                </IconButton>
+                <IconButton
+                  label={mergeTall ? 'Make merged result shorter' : 'Make merged result taller'}
+                  onClick={() => setMergeTall((t) => !t)}
+                >
+                  {mergeTall ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </IconButton>
                 <Button
                   size="sm"
                   onClick={() => applyChoices(allChoices(result, 'left'))}
@@ -1056,20 +1087,35 @@ export function TextWorkspace(props: TextWorkspaceProps) {
                   <Download size={16} />
                 </IconButton>
               </div>
-              <textarea
-                aria-label="Merged result (editable)"
-                value={merged}
-                onChange={(e) => setOverride(e.target.value)}
-                spellCheck={false}
-                wrap={wrap ? 'soft' : 'off'}
-                className="diff-font min-h-0 flex-1 resize-none bg-transparent px-3 py-2 outline-none"
+              <div
+                className="flex min-h-0 flex-1"
                 style={
                   {
                     '--diff-font-size': `${prefs.fontSize}px`,
                     '--diff-row-height': `${Math.round(prefs.fontSize * 1.65)}px`,
                   } as React.CSSProperties
                 }
-              />
+              >
+                <pre
+                  ref={mergedGutter}
+                  aria-hidden
+                  className="diff-font m-0 w-12 shrink-0 select-none overflow-hidden border-r border-line bg-panel2 py-2 pr-2 text-right text-muted"
+                >
+                  {mergedNumbers}
+                </pre>
+                <textarea
+                  aria-label="Merged result (editable)"
+                  value={merged}
+                  onChange={(e) => setOverride(e.target.value)}
+                  onScroll={(e) => {
+                    if (mergedGutter.current)
+                      mergedGutter.current.scrollTop = e.currentTarget.scrollTop
+                  }}
+                  spellCheck={false}
+                  wrap="off"
+                  className="diff-font min-h-0 flex-1 resize-none bg-transparent px-3 py-2 outline-none"
+                />
+              </div>
             </section>
           )}
         </>
