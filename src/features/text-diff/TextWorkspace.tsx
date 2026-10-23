@@ -3,6 +3,7 @@ import {
   ArrowLeftRight,
   ArrowUpToLine,
   ArrowUp,
+  GripVertical,
   ArrowDown,
   Maximize2,
   Minimize2,
@@ -159,7 +160,11 @@ export function TextWorkspace(props: TextWorkspaceProps) {
   const [future, setFuture] = useState<MergeChoices[]>([])
   const [override, setOverride] = useState<string | null>(null)
   const [mergeTop, setMergeTop] = useState(false)
-  const [mergeTall, setMergeTall] = useState(false)
+  const [mergeH, setMergeH] = useState(240)
+  const diffBoxRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ y: number; h: number } | null>(null)
+  const maxMergeH = () => Math.max(160, Math.round(window.innerHeight * 0.7))
+  const clampH = (h: number) => Math.min(maxMergeH(), Math.max(120, h))
 
   useEffect(() => {
     if (mode !== 'code') setWrap(prefs.wrap)
@@ -977,7 +982,8 @@ export function TextWorkspace(props: TextWorkspaceProps) {
           )}
 
           <div
-            style={{ order: mergeTop ? 2 : 1 }}
+            ref={diffBoxRef}
+            style={{ order: mergeTop ? 3 : 1 }}
             className="relative flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel md:min-h-0"
           >
             {loading && (
@@ -1018,12 +1024,64 @@ export function TextWorkspace(props: TextWorkspaceProps) {
           </div>
 
           {mergeOpen && (
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize merged result. Drag, or use the up and down arrow keys."
+              aria-valuenow={mergeH}
+              aria-valuemin={120}
+              aria-valuemax={maxMergeH()}
+              tabIndex={0}
+              style={{ order: 2 }}
+              className="group -my-1.5 flex h-3 shrink-0 cursor-row-resize touch-none items-center justify-center"
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId)
+                dragRef.current = { y: e.clientY, h: mergeH }
+              }}
+              onPointerMove={(e) => {
+                const d = dragRef.current
+                if (!d) return
+                const delta = mergeTop ? e.clientY - d.y : d.y - e.clientY
+                setMergeH(clampH(d.h + delta))
+              }}
+              onPointerUp={() => (dragRef.current = null)}
+              onPointerCancel={() => (dragRef.current = null)}
+              onKeyDown={(e) => {
+                const grow = mergeTop ? 'ArrowDown' : 'ArrowUp'
+                const shrink = mergeTop ? 'ArrowUp' : 'ArrowDown'
+                if (e.key === grow) setMergeH((h) => clampH(h + 24))
+                else if (e.key === shrink) setMergeH((h) => clampH(h - 24))
+                else return
+                e.preventDefault()
+              }}
+            >
+              <span className="h-1 w-16 rounded-full bg-line group-hover:bg-accent group-focus-visible:bg-accent" />
+            </div>
+          )}
+
+          {mergeOpen && (
             <section
               aria-label="Merged result"
-              style={{ order: mergeTop ? 1 : 2 }}
-              className={`flex shrink-0 flex-col rounded-xl border border-line bg-panel ${mergeTall ? 'h-[28rem] max-h-[60vh]' : 'h-60'}`}
+              style={{ order: mergeTop ? 1 : 3, height: mergeH }}
+              className="flex shrink-0 flex-col rounded-xl border border-line bg-panel"
             >
               <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
+                <span
+                  title="Drag up or down to move the merged result above or below the diff"
+                  aria-hidden
+                  className="-ml-1 flex h-8 w-6 shrink-0 cursor-grab touch-none items-center justify-center text-muted hover:text-fg active:cursor-grabbing"
+                  onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
+                  onPointerMove={(e) => {
+                    if (!e.currentTarget.hasPointerCapture(e.pointerId) || !diffBoxRef.current)
+                      return
+                    const r = diffBoxRef.current.getBoundingClientRect()
+                    const mid = r.top + r.height / 2
+                    if (e.clientY < mid && !mergeTop) setMergeTop(true)
+                    else if (e.clientY > mid && mergeTop) setMergeTop(false)
+                  }}
+                >
+                  <GripVertical size={16} />
+                </span>
                 <h2 className="mr-auto text-sm font-semibold">
                   Merged result{' '}
                   <span className="font-normal text-muted">
@@ -1041,10 +1099,10 @@ export function TextWorkspace(props: TextWorkspaceProps) {
                   {mergeTop ? <ArrowDown size={16} /> : <ArrowUp size={16} />}
                 </IconButton>
                 <IconButton
-                  label={mergeTall ? 'Make merged result shorter' : 'Make merged result taller'}
-                  onClick={() => setMergeTall((t) => !t)}
+                  label={mergeH > 300 ? 'Make merged result shorter' : 'Make merged result taller'}
+                  onClick={() => setMergeH(mergeH > 300 ? 240 : clampH(460))}
                 >
-                  {mergeTall ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                  {mergeH > 300 ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                 </IconButton>
                 <Button
                   size="sm"
