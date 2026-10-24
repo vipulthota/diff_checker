@@ -13,6 +13,7 @@ const pages: Record<Route, React.LazyExoticComponent<React.ComponentType>> = {
   text: lazy(() => import('./pages/TextPage')),
   code: lazy(() => import('./pages/CodePage')),
   documents: lazy(() => import('./pages/DocumentsPage')),
+  notebooks: lazy(() => import('./pages/NotebooksPage')),
   images: lazy(() => import('./pages/ImagesPage')),
   spreadsheets: lazy(() => import('./pages/SpreadsheetsPage')),
 }

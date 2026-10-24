@@ -2,11 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   ArrowLeftRight,
   ArrowUpToLine,
-  ArrowUp,
-  GripVertical,
-  ArrowDown,
-  Maximize2,
-  Minimize2,
   ArrowDownToLine,
   ChevronDown,
   ChevronUp,
@@ -26,7 +21,6 @@ import {
   Share,
   Copy,
   FileDown,
-  Replace,
   BookOpen,
 } from 'lucide-react'
 import { DiffViewer } from '../../components/diff-viewer/DiffViewer'
@@ -52,10 +46,11 @@ import {
 import { copyText, downloadText } from '../../utils/download'
 import { exportDiffPdf } from '../../lib/exportPdf'
 import { buildDisplayModel, findMatches, type ViewMode } from './displayModel'
-import { allChoices, buildMerged, type MergeChoices } from './merge'
+import { applyMerge, type MergeChoices } from './merge'
+import { notebookLanguage, summarizeCells } from '../notebook-diff/notebook'
 import { toUnifiedDiff } from './TextDiffEngine'
 
-export type WorkspaceMode = 'text' | 'code' | 'document'
+export type WorkspaceMode = 'text' | 'code' | 'document' | 'notebook'
 
 export interface TextWorkspaceProps {
   mode: WorkspaceMode
@@ -117,8 +112,11 @@ function pageOf(starts: number[] | undefined, lineNo: number | null): number | n
   return ans >= 0 ? ans + 1 : null
 }
 
+const NO_CHOICES: MergeChoices = {}
+
 export function TextWorkspace(props: TextWorkspaceProps) {
   const { mode } = props
+  const codeLike = mode === 'code' || mode === 'notebook'
   const { prefs } = usePrefs()
   const { toast } = useUi()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -136,7 +134,7 @@ export function TextWorkspace(props: TextWorkspaceProps) {
       ? 'unified'
       : 'split',
   )
-  const [wrap, setWrap] = useState(mode === 'code' ? false : prefs.wrap)
+  const [wrap, setWrap] = useState(codeLike ? false : prefs.wrap)
   const [granularity, setGranularity] = useState<DiffGranularity>(prefs.granularity)
   const [ignore, setIgnore] = useState<IgnoreOptions>(DEFAULT_IGNORE)
   const [hide, setHide] = useState(false)
@@ -154,21 +152,12 @@ export function TextWorkspace(props: TextWorkspaceProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
 
   // Merge
-  const [mergeOpen, setMergeOpen] = useState(false)
-  const [choices, setChoicesState] = useState<MergeChoices>({})
-  const [past, setPast] = useState<MergeChoices[]>([])
-  const [future, setFuture] = useState<MergeChoices[]>([])
-  const [override, setOverride] = useState<string | null>(null)
-  const [mergeTop, setMergeTop] = useState(false)
-  const [mergeH, setMergeH] = useState(240)
-  const diffBoxRef = useRef<HTMLDivElement>(null)
-  const dragRef = useRef<{ y: number; h: number } | null>(null)
-  const maxMergeH = () => Math.max(160, Math.round(window.innerHeight * 0.7))
-  const clampH = (h: number) => Math.min(maxMergeH(), Math.max(120, h))
+  const [past, setPast] = useState<{ left: string; right: string }[]>([])
+  const [future, setFuture] = useState<{ left: string; right: string }[]>([])
 
   useEffect(() => {
-    if (mode !== 'code') setWrap(prefs.wrap)
-  }, [prefs.wrap, mode])
+    if (!codeLike) setWrap(prefs.wrap)
+  }, [prefs.wrap, codeLike])
   useEffect(() => setGranularity(prefs.granularity), [prefs.granularity])
 
   const options = useMemo<TextDiffOptions>(() => ({ granularity, ignore }), [granularity, ignore])
@@ -179,10 +168,6 @@ export function TextWorkspace(props: TextWorkspaceProps) {
   useEffect(() => {
     setCurrentHunk(-1)
     setExpanded(new Set())
-    setChoicesState({})
-    setPast([])
-    setFuture([])
-    setOverride(null)
   }, [result])
 
   const searching = searchOpen && query !== ''
@@ -204,14 +189,14 @@ export function TextWorkspace(props: TextWorkspaceProps) {
   // Syntax highlighting (code mode)
   const [readyLang, setReadyLang] = useState('plain')
   useEffect(() => {
-    if (mode !== 'code' || language === 'plain') return
+    if (!codeLike || language === 'plain') return
     let cancelled = false
     loadLanguage(language).then(() => !cancelled && setReadyLang(language))
     return () => {
       cancelled = true
     }
-  }, [language, mode])
-  const highlight = mode === 'code' && language !== 'plain' && readyLang === language
+  }, [language, codeLike])
+  const highlight = codeLike && language !== 'plain' && readyLang === language
   const leftRuns = useMemo(
     () => (highlight ? highlightCode(source.left, language) : null),
     [highlight, source.left, language],
@@ -238,7 +223,10 @@ export function TextWorkspace(props: TextWorkspaceProps) {
         const msgs = [loaded.warning, loaded.note].filter(Boolean) as string[]
         if (msgs.length) setNotes((n) => [...new Set([...n, ...msgs])])
         if (loaded.warning) toast(loaded.warning, 'info')
-        if (mode === 'code') {
+        if (mode === 'notebook') {
+          const id = notebookLanguage(loaded.text)
+          setLanguage(LANGUAGES.some((l) => l.id === id) ? id : 'plain')
+        } else if (mode === 'code') {
           const l = detectLanguage(loaded.name)
           if (l) setLanguage(l.id)
         }
@@ -294,6 +282,8 @@ export function TextWorkspace(props: TextWorkspaceProps) {
     setRightMeta(null)
     setNotes([])
     setStage('edit')
+    setPast([])
+    setFuture([])
     setQuery('')
     setSearchOpen(false)
   }
@@ -370,41 +360,39 @@ export function TextWorkspace(props: TextWorkspaceProps) {
   /* -------------------------------- merging ------------------------------- */
 
   const applyChoices = (next: MergeChoices) => {
-    setPast((p) => [...p.slice(-49), choices])
+    if (loading || source.left !== left || source.right !== right) {
+      toast('Wait for the comparison to finish updating.', 'info')
+      return
+    }
+    const out = applyMerge(result, next)
+    if (out.left === left && out.right === right) return
+    setPast((p) => [...p.slice(-49), { left, right }])
     setFuture([])
-    setChoicesState(next)
-    setOverride(null)
+    setLeft(out.left)
+    setRight(out.right)
   }
-  const choose = (h: number, side: MergeChoice) => {
-    setMergeOpen(true)
-    applyChoices({ ...choices, [h]: side })
+  const choose = (h: number, side: MergeChoice) => applyChoices({ [h]: side })
+  const chooseAll = (side: MergeChoice) => {
+    const all: MergeChoices = {}
+    for (let i = 0; i < hunks; i++) all[i] = side
+    applyChoices(all)
   }
   const undoMerge = () => {
     const prev = past[past.length - 1]
     if (!prev) return
-    setFuture((f) => [choices, ...f])
+    setFuture((f) => [{ left, right }, ...f])
     setPast(past.slice(0, -1))
-    setChoicesState(prev)
-    setOverride(null)
+    setLeft(prev.left)
+    setRight(prev.right)
   }
   const redoMerge = () => {
     const next = future[0]
     if (!next) return
-    setPast((p) => [...p, choices])
+    setPast((p) => [...p, { left, right }])
     setFuture(future.slice(1))
-    setChoicesState(next)
-    setOverride(null)
+    setLeft(next.left)
+    setRight(next.right)
   }
-  const merged = useMemo(
-    () => override ?? buildMerged(result, choices),
-    [override, result, choices],
-  )
-  const mergedGutter = useRef<HTMLPreElement>(null)
-  const mergedNumbers = useMemo(() => {
-    const n = Math.max(merged.split('\n').length, 1)
-    return Array.from({ length: n }, (_, i) => i + 1).join('\n')
-  }, [merged])
-  const resolved = Object.values(choices).filter(Boolean).length
 
   /* -------------------------------- shortcuts ----------------------------- */
 
@@ -443,17 +431,17 @@ export function TextWorkspace(props: TextWorkspaceProps) {
     {
       combo: 'mod+z',
       handler: undoMerge,
-      when: (e) => stage === 'diff' && mergeOpen && !inField(e),
+      when: (e) => stage === 'diff' && !inField(e),
     },
     {
       combo: 'mod+shift+z',
       handler: redoMerge,
-      when: (e) => stage === 'diff' && mergeOpen && !inField(e),
+      when: (e) => stage === 'diff' && !inField(e),
     },
     {
       combo: 'mod+y',
       handler: redoMerge,
-      when: (e) => stage === 'diff' && mergeOpen && !inField(e),
+      when: (e) => stage === 'diff' && !inField(e),
     },
   ])
 
@@ -501,6 +489,10 @@ export function TextWorkspace(props: TextWorkspaceProps) {
   const anyIgnore = (Object.keys(ignore) as (keyof IgnoreOptions)[]).filter(
     (k) => ignore[k] !== DEFAULT_IGNORE[k],
   ).length
+  const cells = useMemo(
+    () => (mode === 'notebook' && stage === 'diff' ? summarizeCells(left, right) : null),
+    [mode, stage, left, right],
+  )
   const hasContent = left !== '' || right !== ''
   const identical = hasContent && left !== '' && right !== '' && stats.differences === 0 && !loading
 
@@ -549,7 +541,7 @@ export function TextWorkspace(props: TextWorkspaceProps) {
       >
         Wrap
       </Button>
-      {mode === 'code' && (
+      {codeLike && (
         <Select
           label="Language"
           value={language}
@@ -589,6 +581,7 @@ export function TextWorkspace(props: TextWorkspaceProps) {
                 setLeftMeta(null)
                 setRightMeta(null)
                 if (mode === 'code') setLanguage('javascript')
+                if (mode === 'notebook') setLanguage('python')
               }}
             >
               Load example
@@ -814,14 +807,54 @@ export function TextWorkspace(props: TextWorkspaceProps) {
             >
               Search
             </Button>
-            <Button
-              size="sm"
-              icon={<GitMerge size={15} aria-hidden />}
-              active={mergeOpen}
-              onClick={() => setMergeOpen((m) => !m)}
+            <Menu
+              trigger={(t) => (
+                <Button size="sm" icon={<GitMerge size={15} aria-hidden />} {...t}>
+                  Merge
+                </Button>
+              )}
             >
-              Merge
-            </Button>
+              {(close) => (
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      close()
+                      chooseAll('left')
+                    }}
+                    disabled={!hunks}
+                  >
+                    Merge all left
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      close()
+                      chooseAll('right')
+                    }}
+                    disabled={!hunks}
+                  >
+                    Merge all right
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      close()
+                      undoMerge()
+                    }}
+                    disabled={!past.length}
+                  >
+                    Undo merge
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      close()
+                      redoMerge()
+                    }}
+                    disabled={!future.length}
+                  >
+                    Redo merge
+                  </MenuItem>
+                </>
+              )}
+            </Menu>
             <Menu
               align="right"
               trigger={(t) => (
@@ -864,27 +897,6 @@ export function TextWorkspace(props: TextWorkspaceProps) {
                     }}
                   >
                     Export as PDF
-                  </MenuItem>
-                  <MenuItem
-                    icon={<Copy size={15} />}
-                    onClick={async () => {
-                      close()
-                      toast(
-                        (await copyText(merged)) ? 'Merged text copied.' : 'Unable to copy.',
-                        'info',
-                      )
-                    }}
-                  >
-                    Copy merged result
-                  </MenuItem>
-                  <MenuItem
-                    icon={<Download size={15} />}
-                    onClick={() => {
-                      close()
-                      downloadText(merged, `${props.fileStem}-merged.txt`)
-                    }}
-                  >
-                    Download merged text
                   </MenuItem>
                 </>
               )}
@@ -972,6 +984,18 @@ export function TextWorkspace(props: TextWorkspaceProps) {
             </div>
           )}
 
+          {cells && hasContent && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-panel px-3 py-2 text-[13px] text-muted">
+              <span>
+                Cells: <strong className="text-fg">{cells.left}</strong> original ·{' '}
+                <strong className="text-fg">{cells.right}</strong> modified
+              </span>
+              <span>{cells.unchanged} unchanged</span>
+              <span className="text-del">{cells.removed} removed or changed</span>
+              <span className="text-add">{cells.added} added or changed</span>
+            </div>
+          )}
+
           {identical && (
             <Notice kind="info">
               <span className="font-medium">No differences found.</span>{' '}
@@ -982,8 +1006,6 @@ export function TextWorkspace(props: TextWorkspaceProps) {
           )}
 
           <div
-            ref={diffBoxRef}
-            style={{ order: mergeTop ? 3 : 1 }}
             className="relative flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel md:min-h-0"
           >
             {loading && (
@@ -1013,7 +1035,7 @@ export function TextWorkspace(props: TextWorkspaceProps) {
                 currentHunk={currentHunk}
                 reveal={reveal}
                 onExpandFold={(id) => setExpanded((s) => new Set(s).add(id))}
-                merge={{ choices, onChoose: choose }}
+                merge={{ choices: NO_CHOICES, onChoose: choose }}
                 onCopy={(side) =>
                   copySide(source[side], side === 'left' ? 'Old version' : 'New version')
                 }
@@ -1022,160 +1044,6 @@ export function TextWorkspace(props: TextWorkspaceProps) {
               />
             )}
           </div>
-
-          {mergeOpen && (
-            <div
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label="Resize merged result. Drag, or use the up and down arrow keys."
-              aria-valuenow={mergeH}
-              aria-valuemin={120}
-              aria-valuemax={maxMergeH()}
-              tabIndex={0}
-              style={{ order: 2 }}
-              className="group -my-1.5 flex h-3 shrink-0 cursor-row-resize touch-none items-center justify-center"
-              onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture(e.pointerId)
-                dragRef.current = { y: e.clientY, h: mergeH }
-              }}
-              onPointerMove={(e) => {
-                const d = dragRef.current
-                if (!d) return
-                const delta = mergeTop ? e.clientY - d.y : d.y - e.clientY
-                setMergeH(clampH(d.h + delta))
-              }}
-              onPointerUp={() => (dragRef.current = null)}
-              onPointerCancel={() => (dragRef.current = null)}
-              onKeyDown={(e) => {
-                const grow = mergeTop ? 'ArrowDown' : 'ArrowUp'
-                const shrink = mergeTop ? 'ArrowUp' : 'ArrowDown'
-                if (e.key === grow) setMergeH((h) => clampH(h + 24))
-                else if (e.key === shrink) setMergeH((h) => clampH(h - 24))
-                else return
-                e.preventDefault()
-              }}
-            >
-              <span className="h-1 w-16 rounded-full bg-line group-hover:bg-accent group-focus-visible:bg-accent" />
-            </div>
-          )}
-
-          {mergeOpen && (
-            <section
-              aria-label="Merged result"
-              style={{ order: mergeTop ? 1 : 3, height: mergeH }}
-              className="flex shrink-0 flex-col rounded-xl border border-line bg-panel"
-            >
-              <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
-                <span
-                  title="Drag up or down to move the merged result above or below the diff"
-                  aria-hidden
-                  className="-ml-1 flex h-8 w-6 shrink-0 cursor-grab touch-none items-center justify-center text-muted hover:text-fg active:cursor-grabbing"
-                  onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
-                  onPointerMove={(e) => {
-                    if (!e.currentTarget.hasPointerCapture(e.pointerId) || !diffBoxRef.current)
-                      return
-                    const r = diffBoxRef.current.getBoundingClientRect()
-                    const mid = r.top + r.height / 2
-                    if (e.clientY < mid && !mergeTop) setMergeTop(true)
-                    else if (e.clientY > mid && mergeTop) setMergeTop(false)
-                  }}
-                >
-                  <GripVertical size={16} />
-                </span>
-                <h2 className="mr-auto text-sm font-semibold">
-                  Merged result{' '}
-                  <span className="font-normal text-muted">
-                    · {resolved} of {hunks} differences resolved (unresolved keep the original)
-                  </span>
-                </h2>
-                <IconButton
-                  label={
-                    mergeTop
-                      ? 'Move merged result below the diff'
-                      : 'Move merged result above the diff'
-                  }
-                  onClick={() => setMergeTop((t) => !t)}
-                >
-                  {mergeTop ? <ArrowDown size={16} /> : <ArrowUp size={16} />}
-                </IconButton>
-                <IconButton
-                  label={mergeH > 300 ? 'Make merged result shorter' : 'Make merged result taller'}
-                  onClick={() => setMergeH(mergeH > 300 ? 240 : clampH(460))}
-                >
-                  {mergeH > 300 ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                </IconButton>
-                <Button
-                  size="sm"
-                  onClick={() => applyChoices(allChoices(result, 'left'))}
-                  disabled={!hunks}
-                >
-                  Accept all left
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => applyChoices(allChoices(result, 'right'))}
-                  disabled={!hunks}
-                >
-                  Accept all right
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon={<Replace size={14} aria-hidden />}
-                  onClick={() => applyChoices({})}
-                  disabled={!resolved && override === null}
-                >
-                  Reset
-                </Button>
-                <IconButton
-                  label="Copy merged result"
-                  onClick={async () =>
-                    toast(
-                      (await copyText(merged)) ? 'Merged text copied.' : 'Unable to copy.',
-                      'info',
-                    )
-                  }
-                >
-                  <Copy size={16} />
-                </IconButton>
-                <IconButton
-                  label="Download merged text"
-                  onClick={() => downloadText(merged, `${props.fileStem}-merged.txt`)}
-                >
-                  <Download size={16} />
-                </IconButton>
-              </div>
-              <div
-                className="flex min-h-0 flex-1"
-                style={
-                  {
-                    '--diff-font-size': `${prefs.fontSize}px`,
-                    '--diff-row-height': `${Math.round(prefs.fontSize * 1.65)}px`,
-                  } as React.CSSProperties
-                }
-              >
-                <pre
-                  ref={mergedGutter}
-                  aria-hidden
-                  className="diff-font m-0 w-12 shrink-0 select-none overflow-hidden border-r border-line bg-panel2 py-2 pr-2 text-right text-muted"
-                >
-                  {mergedNumbers}
-                </pre>
-                <textarea
-                  aria-label="Merged result (editable)"
-                  value={merged}
-                  onChange={(e) => setOverride(e.target.value)}
-                  onScroll={(e) => {
-                    if (mergedGutter.current)
-                      mergedGutter.current.scrollTop = e.currentTarget.scrollTop
-                  }}
-                  spellCheck={false}
-                  wrap="off"
-                  className="diff-font min-h-0 flex-1 resize-none bg-transparent px-3 py-2 outline-none"
-                />
-              </div>
-            </section>
-          )}
         </>
       )}
     </div>

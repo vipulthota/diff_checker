@@ -1,5 +1,6 @@
 import {
   ArrowRight,
+  BookOpen,
   Code2,
   FileText,
   FileType2,
@@ -29,6 +30,12 @@ const FEATURES: { route: Route; title: string; icon: typeof FileText; text: stri
     title: 'Document Compare',
     icon: FileType2,
     text: 'Extract and compare the text of PDF, DOCX, Markdown and TXT files, page by page.',
+  },
+  {
+    route: 'notebooks',
+    title: 'Notebook Compare',
+    icon: BookOpen,
+    text: 'Cell-aware diffs for Databricks notebook source files and .ipynb exports.',
   },
   {
     route: 'images',

@@ -23,6 +23,7 @@ export const NAV: { route: Route; label: string }[] = [
   { route: 'text', label: 'Text' },
   { route: 'code', label: 'Code' },
   { route: 'documents', label: 'Documents' },
+  { route: 'notebooks', label: 'Notebooks' },
   { route: 'images', label: 'Images' },
   { route: 'spreadsheets', label: 'Spreadsheets' },
 ]
